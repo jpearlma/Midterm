@@ -1,0 +1,129 @@
+---
+title: "Midterm Chorpleth Tutorial"
+author: "Jackson Pearlman"
+date: "10/24/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)   
+library(ggmap)   
+library(broom)
+library(tidyverse)
+library(sf)
+library(readr)
+library(stringr)
+library(jsonlite)
+library(leaflet)
+library(leaflet.providers)
+library(RColorBrewer)
+```
+
+```{r}
+geojson_data <- st_read("stanford-vj304zk6062-geojson.json") ## calls in my polygon data that will be the foundation for my choropleth.
+```
+
+```{r}
+clean_municipality_name <- function(name) {
+  name <- gsub("å", "a", name)
+  name <- gsub("ä", "a", name)
+  name <- gsub("ö", "o", name)
+  name <- gsub("Ö", "O", name)
+  name <- gsub("Ä", "A", name)
+  name <- gsub("Å", "A", name)
+  return(name)} ## this function changes the Swedish vowels found in the .json data for Sweden's municipalities into English equivalents. This will allow the columns from the data set to join with the .json
+geojson_data <- geojson_data %>%
+  dplyr::mutate(municipality = clean_municipality_name(name_2)) ##this creates a new row in the .json of municipalities without Swedish vowels.
+```
+
+```{r}
+swemun <- read.csv("qog_swemun_edit_ts_16.csv") %>% ## I used an edited version of the dataset where I found specific municipalities(Upplands Vasby and Haninge) that were not perfect matches between the .json and data set. I went into excel and used find and replace to match up those few observations with the .json
+  dplyr::filter(year == 2014) ## The dataset was comprehensive from 1980-2015 but I only needed one year so I chose the most recent year that had full observations of my variable of interest: percentage of population that was born outside of Sweden.
+```
+
+```{r}
+facet_swemun <- read.csv("qog_swemun_edit_ts_16.csv") %>%
+  dplyr::filter(year %in% c(2001, 2007, 2014))
+
+facet_spec <- facet_swemun %>% 
+  dplyr::select(scb_forborn2, year, municipality) 
+
+sweden_years <- geojson_data %>% 
+  left_join(facet_spec, by = c("municipality" = "municipality")) ## This whole section of code allows mulitple years to be included for a visualization which is needed for my `ggplot2` map. 
+```
+
+```{r}
+swemun_spec <- swemun %>% 
+  dplyr::select(scb_forborn2, year, municipality) ## this takes the data set and removes columns that are not of interest for the visualization. I kept year to make sure that i had only observations from 2014.
+```
+
+```{r}
+sweden <- geojson_data %>% 
+  left_join(swemun_spec, by = c("municipality" = "municipality")) ## This is the most important step to generate a chorpleth with a separate data set and polgons of regions. In this case I am taking the specific variables from the data set and adding them and their observations to the shapefile. The observations are matched based on each of the observed municipalities so that when I generate a map all of the quantitative data from the foreign born variable will color corresponding to each municipality's observation.
+```
+
+### If you want to generate a choropleth using the ggplot2 package:
+```{r, fig.alt = "Multiple choropleth maps of Sweden's municipalities in the years 2001, 2007, and 2014. The shaded regions correspond to the percentage of the municipality population that were born outside of Sweden. As the years increase, the overall percentage of foreign born population increases, with more and more areas in the <5% to the 10% and up values."}
+ggplot(sweden_years, aes(fill = scb_forborn2), color = "white") + ## this line specifies the variable that will color each region, the color in this instance specifies the color for the borders between each municipality.
+  geom_sf(show.legend = T) + ## This makes it so a legend explaining the fill variable is displayed.
+  scale_fill_distiller(name = "(%) Foreign Born",
+                       palette = "BuPu")+ ## Specifies a color pallete for the fill from the RColorBrewer package and gives a title to the legend.
+  theme_map()+ ## a theme that works well with displaying maps
+  theme(legend.position = "right")+ 
+  labs(title = "Percentage of Sweden's Municipality Populations Born Outside of Sweden(2001 - 2014)",
+       caption = "Visualization By: Jackson Pearlman;
+       
+       Data from: Dahlström, Carl & Maria Tyrberg (2016).
+       Politics, Institutions and Services in Swedish
+       Municipalities, 1980-2015, version 01 April 2016.
+       University of Gothenburg: The Quality of Government Institute,
+       http://www.qog.pol.gu.se;
+       
+       Municipality Polygons from :Hijmans, Robert J.,
+       University of California, Berkeley, Museum of Vertebrate Zoology.
+       Second-level Administrative Divisions, Sweden, 2015.
+       Retrieved from https://geodata.lib.utexas.edu/catalog/stanford-vj304zk6062"
+       )+ ## Provides a title  and caption that gives credit to the sources of the shapefile and data set used.
+  facet_wrap(~year) ## one advantage ggplot2 has is the ease of adding multiple chorpleths to a visualization, here I could easily include two more years to visualize a trend in foreign born population over time. 
+```
+
+## Interactive choropleth using the leaflet package for r:
+```{r, fig.alt = "Choropleth Map of foreign born population in Sweden broken up by Municipality using data from 2014. Most municipalities in the north of Sweden are <10% with the municipality Haparanda having he largest percentage of 41.16%. The south of Sweden has much more diversity in values but overall higher percentages compared to the north."}
+pal <- colorNumeric("plasma",
+  domain = sweden$scb_forborn2
+) ## creates a color palette for the quantitative variable that will fill the municipalities. colorNumeric is used here because my variable of interest is numeric; if you have a categorical variable you can use colorFactor with a palette designed for categories instead.
+
+labels <- paste(
+    "Municipality: ", sweden$municipality,"<br/>", 
+    "% Foreign Born: ", sweden$scb_forborn2, "<br/>") %>% lapply(htmltools::HTML) ## This utilizes some javascript to create information that will get displayed when a specific municipality is moused-over.
+
+leaflet(sweden) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>% ## provides a custom base map that is minimal, this will help highlight the contrasting ranges of values in the choropleth
+  addPolygons(
+  fillColor = ~pal(scb_forborn2), ## creates the shaded areas on map that are based on my numeric variable and the color pallete specified above.
+  color = "white", ## establishes a border color to distinquish regions
+  weight = 2, ## parameter for borders
+  opacity = .3, ## parameter for borders
+  dashArray = "3", ## parameter for borders
+  fillOpacity = 0.9, ## sets level of transparency for shaded municipalities 
+  highlightOptions = highlightOptions(
+    weight = 5,
+    color = "#666",
+    dashArray = "",
+    fillOpacity = 0.9,
+    bringToFront = TRUE), ## makes it so a window pops up over a mouse when they highlight over a region
+  label = labels, ## uses the javascript from earlier to put the specified information in the mouse-over popup
+  labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto")) %>% 
+  addLegend(pal = pal, values = ~scb_forborn2, opacity = 0.9, title = "(%) of Municipaliy Born Outside of Sweden", position = "bottomright" ) ## adds a legend specifying the range of the numeric values and the corresponding color-coding
+
+```
+
+
+
